@@ -202,3 +202,33 @@ The evaluator runs CARLA at a simulation timestep of approximately:
 ```
 
 At this point the basic **CARLA + frozen TransFuser++ setup is working**.
+
+## 10. Log temporal TF++ outputs
+
+The instrumented `team_code/sensor_agent.py` writes one JSON Lines record per
+inference/control step. Each record contains the full predicted path, the full
+target-speed probability distribution, the scalar target speed, the control
+returned to CARLA, ego position/speed/yaw, acceleration, yaw rate, target point,
+command, route ID, and timestep.
+
+Run the evaluator with a dedicated output directory:
+
+```bash
+TEMPORAL_LOG_DIR=results/temporal_logs \
+python leaderboard/leaderboard/leaderboard_evaluator_local.py \
+  --routes leaderboard/data/debug.xml \
+  --agent team_code/sensor_agent.py \
+  --agent-config pretrained_models/project_tfpp \
+  --checkpoint results/debug_tfpp_instrumented.json \
+  --debug 1
+```
+
+Validate the resulting files:
+
+```bash
+python tools/validate_temporal_logs.py results/temporal_logs
+```
+
+The validator checks that every record has the required fields, predicted
+paths have shape `[N, 2]`, speed probabilities sum to one, steps are
+consecutive, and timestamps match the configured `0.05` second timestep.
