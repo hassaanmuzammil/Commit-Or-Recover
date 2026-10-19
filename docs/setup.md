@@ -1,34 +1,21 @@
 # Setup
 
-## 1. Clone CARLA Garage
+## 1. Use the repository checkout
+
+`carla_garage` is already included in this repository as a tracked folder.
+Start from the repository root:
 
 ```bash
-mkdir -p ~/Desktop/Commit-Or-Recover
-cd ~/Desktop/Commit-Or-Recover
+cd /path/to/Commit-Or-Recover
+```
 
-git clone https://github.com/autonomousvision/carla_garage.git
+## 2. Install CARLA locally
+
+The CARLA executable and other large runtime assets are kept locally and are
+not committed to Git. From the repository root:
+
+```bash
 cd carla_garage
-
-git checkout leaderboard_2
-```
-
-Verify:
-
-```bash
-git branch --show-current
-```
-
-Expected:
-
-```text
-leaderboard_2
-```
-
-## 2. Install CARLA
-
-From `carla_garage`:
-
-```bash
 chmod +x setup_carla.sh
 ./setup_carla.sh
 ```
@@ -42,6 +29,7 @@ carla_garage/carla/
 ## 3. Create Python Environment
 
 ```bash
+cd carla_garage
 conda env create -f environment.yml
 conda activate garage_2
 ```
@@ -143,10 +131,14 @@ appears in the architecture list.
 Terminal 1:
 
 ```bash
+cd /path/to/Commit-Or-Recover
 conda activate garage_2
-cd $CARLA_ROOT
-
-./CarlaUE4.sh
+cd "$CARLA_ROOT"
+./CarlaUE4.sh \
+  -RenderOffScreen \
+  -nosound \
+  -quality-level=Low \
+  -carla-rpc-port=2000
 ```
 
 A CARLA city window should open. Leave it running.
@@ -156,17 +148,13 @@ A CARLA city window should open. Leave it running.
 Open Terminal 2:
 
 ```bash
+cd /path/to/Commit-Or-Recover
 conda activate garage_2
-cd $WORK_DIR
+cd "$WORK_DIR"
+mkdir -p results
 ```
 
 Set the environment variables from Step 4 if they are not already set.
-
-Create the results directory:
-
-```bash
-mkdir -p results
-```
 
 Run the debug route:
 
@@ -211,7 +199,7 @@ target-speed probability distribution, the scalar target speed, the control
 returned to CARLA, ego position/speed/yaw, acceleration, yaw rate, target point,
 command, route ID, and timestep.
 
-Run the evaluator with a dedicated output directory:
+Run the instrumented evaluator with a dedicated output directory:
 
 ```bash
 TEMPORAL_LOG_DIR=results/temporal_logs \
@@ -240,3 +228,12 @@ consecutive, and timestamps match the configured `0.05` second timestep.
 | Roundabout/junction | `T_Junction`, `SignalizedJunctionLeftTurn`, `SignalizedJunctionRightTurn`, `NonSignalizedJunctionLeftTurn` |
 | Lane split/merge | `SequentialLaneChange`, `MergerIntoSlowTrafficV2`, `HighwayExit`, `EnterActorFlow` |
 | Obstacle detour | `ParkedObstacle`, `ConstructionObstacle`, `HazardAtSideLane`, `AccidentTwoWays` |
+
+Validate the selected Bench2Drive routes:
+
+```bash
+cd "$WORK_DIR"
+python tools/run_bench2drive_routes.py \
+  --output results/bench2drive_selected \
+  --validate-only
+```
