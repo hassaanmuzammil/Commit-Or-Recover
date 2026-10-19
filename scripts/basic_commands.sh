@@ -12,26 +12,17 @@ cd "$CARLA_ROOT"
 ./CarlaUE4.sh \
   -RenderOffScreen \
   -nosound \
-  -quality-level=Low \
   -carla-rpc-port=2000
 
 conda activate garage_2
 cd $WORK_DIR
 mkdir -p results
-python leaderboard/leaderboard/leaderboard_evaluator_local.py \
-  --routes leaderboard/data/debug.xml \
-  --agent team_code/sensor_agent.py \
-  --agent-config pretrained_models/project_tfpp \
-  --checkpoint results/debug_tfpp.json \
-  --debug 1
-
-
 TEMPORAL_LOG_DIR=results/temporal_logs \
 python leaderboard/leaderboard/leaderboard_evaluator_local.py \
   --routes leaderboard/data/debug.xml \
   --agent team_code/sensor_agent.py \
   --agent-config pretrained_models/project_tfpp \
-  --checkpoint results/debug_tfpp_instrumented.json \
+  --checkpoint results/debug_tfpp.json \
   --debug 1
 
 python tools/validate_temporal_logs.py results/temporal_logs
