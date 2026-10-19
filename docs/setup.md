@@ -232,3 +232,11 @@ python tools/validate_temporal_logs.py results/temporal_logs
 The validator checks that every record has the required fields, predicted
 paths have shape `[N, 2]`, speed probabilities sum to one, steps are
 consecutive, and timestamps match the configured `0.05` second timestep.
+
+## 11. Define scenario families
+
+| Family | Bench2Drive types |
+|---|---|
+| Roundabout/junction | `T_Junction`, `SignalizedJunctionLeftTurn`, `SignalizedJunctionRightTurn`, `NonSignalizedJunctionLeftTurn` |
+| Lane split/merge | `SequentialLaneChange`, `MergerIntoSlowTrafficV2`, `HighwayExit`, `EnterActorFlow` |
+| Obstacle detour | `ParkedObstacle`, `ConstructionObstacle`, `HazardAtSideLane`, `AccidentTwoWays` |

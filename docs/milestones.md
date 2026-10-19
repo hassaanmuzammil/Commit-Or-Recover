@@ -5,7 +5,7 @@
    Log path predictions, full target-speed distribution, controls, ego state, and route context every timestep.
 
 3. **Set up 2–3 scenario families**  
-   Select Bench2Drive/custom roundabout, lane split/merge, obstacle-detour scenarios and make runs repeatable.
+   Select Bench2Drive roundabout, lane split/merge, obstacle-detour scenarios and make runs repeatable.
 
 4. **Generate closed-loop dataset**  
    Run many scenario variations and collect enough **failures + successful/benign corrections**.
