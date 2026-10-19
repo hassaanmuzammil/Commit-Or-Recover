@@ -1,0 +1,3 @@
+# carla_garage is part of this repository (monorepo).
+!carla_garage/
+!carla_garage/**
