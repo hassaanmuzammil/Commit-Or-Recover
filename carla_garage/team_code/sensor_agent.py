@@ -246,8 +246,17 @@ class SensorAgent(autonomous_agent.AutonomousAgent):
     self.temporal_route_id = route_index
     print(f'Temporal instrumentation: {self.temporal_log_path}')
 
+    # Schema v2: scene logging. Privileged ground truth is written to the log
+    # for evaluation labels only; it is never fed to the model or controller.
+    self.gt_log_radius = float(os.environ.get('GT_LOG_RADIUS', 60.0))
+    self.gt_world = None
+    self.gt_hero = None
+    self.gt_collision_sensor = None
+    self.gt_pending_collisions = []
+
   def _log_temporal_step(self, timestamp, tick_data, predicted_path,
-                         target_speed_probabilities, target_speed_scalar, control):
+                         target_speed_probabilities, target_speed_scalar, control,
+                         pred_boxes=None, tfpp_flags=None):
     """Write one complete policy/control observation as a JSONL record."""
     state = np.asarray(self.state_log[-1], dtype=np.float64)
     speed = float(tick_data['speed'].item())
@@ -281,8 +290,17 @@ class SensorAgent(autonomous_agent.AutonomousAgent):
     if speed_probabilities.size == 0:
       raise ValueError('Target-speed probability distribution is empty.')
 
+    boxes_out = []
+    for box in (pred_boxes or []):
+      # [x, y, extent_x, extent_y, yaw, speed, brake, class, score], ego frame (x front, y right)
+      boxes_out.append([float(value) for value in np.asarray(box, dtype=np.float64).reshape(-1)[:9]])
+
+    gt_ego, gt_actors = self._collect_ground_truth()
+    collisions = self.gt_pending_collisions
+    self.gt_pending_collisions = []
+
     record = {
-        'schema_version': 1,
+        'schema_version': 2,
         'step': int(self.step),
         'timestamp': float(timestamp),
         'route_id': self.temporal_route_id,
@@ -300,7 +318,12 @@ class SensorAgent(autonomous_agent.AutonomousAgent):
         'yaw_rate': yaw_rate,
         'target_point': [float(value) for value in target_point],
         'command': command,
+        'pred_boxes': boxes_out,
+        'gt_ego': gt_ego,
+        'gt_actors': gt_actors,
+        'collisions': collisions,
     }
+    record.update(tfpp_flags or {})
     self.temporal_writer.write(json.dumps(record, separators=(',', ':')) + '\n')
     self.temporal_writer.flush()
 
@@ -354,7 +377,88 @@ class SensorAgent(autonomous_agent.AutonomousAgent):
     self._route_planner = RoutePlanner(self.config.route_planner_min_distance, self.config.route_planner_max_distance,
                                        self.lat_ref, self.lon_ref)
     self._route_planner.set_route(self._global_plan, True)
+    self._init_gt_logging()
     self.initialized = True
+
+  def _init_gt_logging(self):
+    """Privileged handles used only to write evaluation labels into the temporal log."""
+    from srunner.scenariomanager.carla_data_provider import CarlaDataProvider  # pylint: disable=locally-disabled, import-outside-toplevel
+    self.gt_hero = CarlaDataProvider.get_hero_actor()
+    if self.gt_hero is None:
+      print('GT logging: hero actor not found; ground-truth fields will be empty.')
+      return
+    self.gt_world = self.gt_hero.get_world()
+    blueprint = self.gt_world.get_blueprint_library().find('sensor.other.collision')
+    self.gt_collision_sensor = self.gt_world.spawn_actor(blueprint, carla.Transform(), attach_to=self.gt_hero)
+
+    def on_collision(event):
+      other = event.other_actor
+      impulse = event.normal_impulse
+      self.gt_pending_collisions.append({
+          'frame': int(event.frame),
+          'other_id': int(other.id) if other is not None else -1,
+          'other_type': str(other.type_id) if other is not None else 'unknown',
+          'impulse': float(math.sqrt(impulse.x**2 + impulse.y**2 + impulse.z**2)),
+      })
+
+    self.gt_collision_sensor.listen(on_collision)
+
+  @staticmethod
+  def _actor_class(type_id):
+    if type_id.startswith('vehicle.'):
+      return 'vehicle'
+    if type_id.startswith('walker.'):
+      return 'walker'
+    return 'static'
+
+  def _collect_ground_truth(self):
+    """Ego and nearby actors from the simulator, boxes expressed in the ego vehicle frame (x front, y right)."""
+    if self.gt_hero is None:
+      return None, []
+    ego_tf = self.gt_hero.get_transform()
+    ego_loc = ego_tf.location
+    ego_yaw = math.radians(ego_tf.rotation.yaw)
+    cos_y, sin_y = math.cos(ego_yaw), math.sin(ego_yaw)
+    ego_vel = self.gt_hero.get_velocity()
+    gt_ego = {
+        'frame': int(self.gt_world.get_snapshot().frame),
+        'x': ego_loc.x, 'y': ego_loc.y, 'z': ego_loc.z, 'yaw': ego_yaw,
+        'vx': ego_vel.x, 'vy': ego_vel.y,
+        'speed': math.hypot(ego_vel.x, ego_vel.y),
+    }
+
+    actors = []
+    for actor in self.gt_world.get_actors():
+      type_id = actor.type_id
+      if actor.id == self.gt_hero.id:
+        continue
+      if not (type_id.startswith('vehicle.') or type_id.startswith('walker.') or type_id.startswith('static.prop')):
+        continue
+      tf = actor.get_transform()
+      # Bounding-box centre in world coordinates (actor origin + rotated local box offset).
+      center = tf.transform(actor.bounding_box.location)
+      dx, dy = center.x - ego_loc.x, center.y - ego_loc.y
+      if dx * dx + dy * dy > self.gt_log_radius**2:
+        continue
+      vel = actor.get_velocity()
+      yaw = math.radians(tf.rotation.yaw)
+      rel_yaw = math.atan2(math.sin(yaw - ego_yaw), math.cos(yaw - ego_yaw))
+      extent = actor.bounding_box.extent
+      actors.append({
+          'id': int(actor.id),
+          'type': type_id,
+          'class': self._actor_class(type_id),
+          'x': cos_y * dx + sin_y * dy,
+          'y': -sin_y * dx + cos_y * dy,
+          'yaw': rel_yaw,
+          'ext_x': extent.x,
+          'ext_y': extent.y,
+          'speed': math.hypot(vel.x, vel.y),
+          'vx': cos_y * vel.x + sin_y * vel.y,
+          'vy': -sin_y * vel.x + cos_y * vel.y,
+          'world': [center.x, center.y, yaw],
+      })
+    return gt_ego, actors
 
   def sensors(self):
     sensors = [{
@@ -615,9 +719,9 @@ class SensorAgent(autonomous_agent.AutonomousAgent):
           target_point_next=tick_data['target_point_next'] if self.config.two_tp_input else None,
           ego_vel=velocity,
           command=tick_data['command'])
-        # Only convert bounding boxes when they are used.
-        if self.config.detect_boxes and (compute_debug_output or self.config.backbone in ('aim') or
-                                         self.stop_sign_controller):
+        # Boxes are always converted so they can be logged (schema v2). Driving only
+        # consumes them under the original condition below (bb_buffer).
+        if self.config.detect_boxes:
           pred_bounding_box = self.nets[i].convert_features_to_bb_metric(pred_bb_features)
         else:
           pred_bounding_box = None
@@ -641,11 +745,15 @@ class SensorAgent(autonomous_agent.AutonomousAgent):
       bounding_boxes.append(pred_bounding_box)
 
     # Average the predictions from ensembles
-    if self.config.detect_boxes and (compute_debug_output or self.config.backbone in ('aim') or
-                                     self.stop_sign_controller):
+    if self.config.detect_boxes:
       # We average bounding boxes by using non-maximum suppression on the set of all detected boxes.
       bbs_vehicle_coordinate_system = t_u.non_maximum_suppression(bounding_boxes, self.config.iou_treshold_nms)
+    else:
+      bbs_vehicle_coordinate_system = None
+    logged_boxes = bbs_vehicle_coordinate_system
 
+    if self.config.detect_boxes and (compute_debug_output or self.config.backbone in ('aim') or
+                                     self.stop_sign_controller):
       self.bb_buffer.append(bbs_vehicle_coordinate_system)
     else:
       bbs_vehicle_coordinate_system = None
@@ -725,6 +833,8 @@ class SensorAgent(autonomous_agent.AutonomousAgent):
     if self.stuck_detector > self.config.stuck_threshold:
       self.force_move = self.config.creep_duration
 
+    tfpp_emergency_stop = False
+    tfpp_force_move = self.force_move > 0
     if self.force_move > 0:
       emergency_stop = False
       if self.config.backbone not in ('aim'):
@@ -743,6 +853,7 @@ class SensorAgent(autonomous_agent.AutonomousAgent):
         safety_box = safety_box[safety_box[..., 0] > self.config.safety_box_x_min]
         safety_box = safety_box[safety_box[..., 0] < self.config.safety_box_x_max]
         emergency_stop = (len(safety_box) > 0)  # Checks if the List is empty
+      tfpp_emergency_stop = bool(emergency_stop)
 
       if not emergency_stop:
         print('Detected agent being stuck. Step: ', self.step)
@@ -791,7 +902,16 @@ class SensorAgent(autonomous_agent.AutonomousAgent):
         predicted_path=predicted_path,
         target_speed_probabilities=pred_target_speed_ensemble,
         target_speed_scalar=pred_target_speed_scalar,
-        control=control)
+        control=control,
+        pred_boxes=logged_boxes,
+        tfpp_flags={
+            'tfpp_emergency_stop': tfpp_emergency_stop,
+            'tfpp_force_move': bool(tfpp_force_move),
+            'tfpp_stop_sign_stop': bool(self.stop_sign_controller and stop_for_stop_sign),
+            # Built-in TF++ box check (unused by the driving stack); logged for baseline comparison only.
+            'tfpp_bb_in_front': bool(self.bb_detected_in_front_of_vehicle(gt_velocity, boxes=logged_boxes))
+                                if logged_boxes is not None else False,
+        })
 
     return control
 
@@ -837,9 +957,11 @@ class SensorAgent(autonomous_agent.AutonomousAgent):
 
     return stop_sign_stop_predicted
 
-  def bb_detected_in_front_of_vehicle(self, ego_speed):
-    if len(self.bb_buffer) < 1:  # We only start after we have 4 time steps.
-      return False
+  def bb_detected_in_front_of_vehicle(self, ego_speed, boxes=None):
+    if boxes is None:
+      if len(self.bb_buffer) < 1:  # We only start after we have 4 time steps.
+        return False
+      boxes = self.bb_buffer[-1]
 
     collision_predicted = False
 
@@ -854,7 +976,7 @@ class SensorAgent(autonomous_agent.AutonomousAgent):
     safety_bounding_box = carla.BoundingBox(center_safety_box, extent)
     safety_bounding_box.rotation = carla.Rotation(0.0, 0.0, 0.0)
 
-    for bb in self.bb_buffer[-1]:
+    for bb in boxes:
       # We just give them some arbitrary height. Does not matter
       bb_extent_z = 1.0
       loc_local = carla.Location(bb[0], bb[1], 0.0)
@@ -914,6 +1036,15 @@ class SensorAgent(autonomous_agent.AutonomousAgent):
             ujson.dump(self.tp_attention_buffer, f, indent=4)
 
         del self.tp_attention_buffer
+
+    if getattr(self, 'gt_collision_sensor', None) is not None:
+      try:
+        if self.gt_collision_sensor.is_alive:
+          self.gt_collision_sensor.stop()
+          self.gt_collision_sensor.destroy()
+      except RuntimeError:
+        pass
+      self.gt_collision_sensor = None
 
     if hasattr(self, 'temporal_file') and not self.temporal_file.closed:
       self.temporal_file.flush()

@@ -70,6 +70,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--checkpoint", type=Path, default=Path("pretrained_models/project_tfpp"))
     parser.add_argument("--traffic-manager-seed", type=int, default=100)
     parser.add_argument("--debug", type=int, default=1)
+    parser.add_argument("--only", nargs="+", default=None, help="Run only these route ids.")
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("--validate-only", action="store_true")
     parser.add_argument(
@@ -200,6 +201,8 @@ def main() -> int:
     args.output = args.output if args.output.is_absolute() else root / args.output
 
     routes = discover_all_routes(root) if args.suite == "all" else ROUTES
+    if args.only:
+        routes = tuple(route for route in routes if route.route_id in set(args.only))
 
     for subdir in ("checkpoints", "logs", "stdout"):
         (args.output / subdir).mkdir(parents=True, exist_ok=True)

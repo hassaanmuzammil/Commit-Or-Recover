@@ -15,6 +15,12 @@ REQUIRED_KEYS = {
     'acceleration', 'yaw_rate', 'target_point', 'command',
 }
 
+# Scene-logging fields added in schema version 2.
+REQUIRED_KEYS_V2 = {
+    'pred_boxes', 'gt_ego', 'gt_actors', 'collisions',
+    'tfpp_emergency_stop', 'tfpp_force_move', 'tfpp_stop_sign_stop', 'tfpp_bb_in_front',
+}
+
 
 def validate_file(path: Path) -> int:
   records = []
@@ -26,7 +32,8 @@ def validate_file(path: Path) -> int:
         record = json.loads(line)
       except json.JSONDecodeError as error:
         raise ValueError(f'{path}:{line_number}: invalid JSON: {error}') from error
-      missing = REQUIRED_KEYS - record.keys()
+      required = REQUIRED_KEYS | (REQUIRED_KEYS_V2 if record.get('schema_version', 1) >= 2 else set())
+      missing = required - record.keys()
       if missing:
         raise ValueError(f'{path}:{line_number}: missing keys: {sorted(missing)}')
       records.append(record)
@@ -46,6 +53,9 @@ def validate_file(path: Path) -> int:
       raise ValueError(f'{path}: invalid target-speed distribution shape {probabilities.shape}')
     if not np.isclose(probabilities.sum(), 1.0, atol=1e-4):
       raise ValueError(f'{path}: target-speed probabilities sum to {probabilities.sum()}')
+    for box in record.get('pred_boxes', []):
+      if len(box) != 9:
+        raise ValueError(f'{path}: step {record["step"]}: pred_box has {len(box)} values, expected 9')
 
   if len(records) > 1:
     step_diffs = np.diff(steps)
