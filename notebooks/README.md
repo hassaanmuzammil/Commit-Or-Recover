@@ -16,6 +16,8 @@ Each notebook ends with a **Takeaways** section written from its own outputs.
 
 [gru_collision_monitor.ipynb](gru_collision_monitor.ipynb) is an earlier pilot. It trains a GRU on the older dataset in `data/monitor_dataset/` and is not part of this sequence.
 
+[gru_v2_case_study.ipynb](gru_v2_case_study.ipynb) is a small follow-up case study: the same GRU idea on the schema-v2 logs, with and without TF++'s predicted boxes, using notebook 1's labels and notebook 6's folds and metrics. It writes to `results/bench2drive_v2/gru_v2/` and runs in about a minute on a GPU.
+
 ## Dependencies between notebooks
 
 | Notebook | Uses |
