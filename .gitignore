@@ -1,3 +1,69 @@
+# Commit-Or-Recover: root .gitignore
+# carla_garage/, results/ and extra/ also have their own .gitignore files
+# (CARLA binaries, pretrained weights and run outputs are ignored there).
+
 # carla_garage is part of this repository (monorepo).
 !carla_garage/
 !carla_garage/**
+
+# ---------------------------------------------------------------- Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+*.egg-info/
+.eggs/
+build/
+dist/
+pip-log.txt
+
+# ---------------------------------------------------------------- Environments
+.env
+.env.*
+.venv/
+venv/
+env/
+.conda/
+.python-version
+
+# ---------------------------------------------------------------- Jupyter
+.ipynb_checkpoints/
+profile_default/
+ipython_config.py
+
+# ---------------------------------------------------------------- Tooling caches
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.dmypy.json
+.coverage
+.coverage.*
+htmlcov/
+.cache/
+
+# ---------------------------------------------------------------- Editors and OS
+.vscode/
+.idea/
+*.swp
+*~
+.DS_Store
+Thumbs.db
+
+# ---------------------------------------------------------------- Run outputs and large data
+# Simulation runs, analysis caches and figures are regenerated from the logs.
+/results/
+/extra/
+/data/
+carla_garage/results/
+
+# Model weights, caches and arrays produced by our own code
+# (scoped to our folders: carla_garage tracks some .h5/.npy files of its own)
+/src/**/*.pkl
+/src/**/*.pt
+/src/**/*.pth
+/src/**/*.npz
+/notebooks/**/*.pkl
+/notebooks/**/*.pt
+/notebooks/**/*.pth
+/notebooks/**/*.npz
+/notebooks/**/*.png

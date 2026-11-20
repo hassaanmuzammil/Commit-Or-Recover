@@ -6,7 +6,8 @@ Run this from the carla_garage directory while CARLA is running:
     python tools/run_bench2drive_routes.py
 
 By default, the script runs the 20 selected routes. Use ``--suite all`` to
-run all 220 split Bench2Drive routes.
+run all 220 split Bench2Drive routes, or ``--suite longest6`` to run the
+36 Longest6 v2 routes (leaderboard/data/longest6_split).
 
 The script runs routes sequentially because they share one CARLA server and
 one Traffic Manager port. Each route receives its own checkpoint, temporal
@@ -62,9 +63,9 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
         "--suite",
-        choices=("selected", "all"),
+        choices=("selected", "all", "longest6"),
         default="selected",
-        help="Run the selected 20 routes or all 220 Bench2Drive routes.",
+        help="Run the selected 20 routes, all 220 Bench2Drive routes, or the 36 Longest6 v2 routes.",
     )
     parser.add_argument("--output", type=Path, default=None)
     parser.add_argument("--checkpoint", type=Path, default=Path("pretrained_models/project_tfpp"))
@@ -86,9 +87,17 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
-def discover_all_routes(root: Path) -> tuple[Route, ...]:
-    """Build a route manifest from the 220 one-route split XML files."""
-    split_dir = root / "leaderboard" / "data" / "bench2drive_split"
+SUITE_SPLITS = {
+    "selected": ("bench2drive_split", None),
+    "all": ("bench2drive_split", 220),
+    "longest6": ("longest6_split", 36),
+}
+
+
+def discover_all_routes(root: Path, suite: str = "all") -> tuple[Route, ...]:
+    """Build a route manifest from the one-route split XML files of a suite."""
+    split_name, expected = SUITE_SPLITS[suite]
+    split_dir = root / "leaderboard" / "data" / split_name
     routes = []
     for route_xml in sorted(split_dir.glob("*.xml")):
         xml_root = ET.parse(route_xml).getroot()
@@ -103,11 +112,11 @@ def discover_all_routes(root: Path) -> tuple[Route, ...]:
         routes.append(Route(
             route_xml.name,
             route_node.attrib["id"],
-            "all",
+            suite,
             ",".join(scenario_types) or "none",
         ))
-    if len(routes) != 220:
-        raise ValueError(f"Expected 220 split routes, found {len(routes)}")
+    if len(routes) != expected:
+        raise ValueError(f"Expected {expected} split routes in {split_dir}, found {len(routes)}")
     return tuple(routes)
 
 
@@ -162,7 +171,7 @@ def run_route(root: Path, route: Route, args: argparse.Namespace) -> tuple[int, 
     debug_checkpoint = output / "checkpoints" / f"{route.route_id}_live.txt"
     log_dir = output / "logs" / route.route_id
     stdout_path = output / "stdout" / f"{route.route_id}.log"
-    route_xml = root / "leaderboard" / "data" / "bench2drive_split" / route.split_file
+    route_xml = root / "leaderboard" / "data" / SUITE_SPLITS[args.suite][0] / route.split_file
 
     command = [
         sys.executable,
@@ -197,10 +206,11 @@ def main() -> int:
     args = parse_args()
     root = Path(__file__).resolve().parents[1]
     if args.output is None:
-        args.output = Path("results/bench2drive_all" if args.suite == "all" else "results/bench2drive_selected")
+        args.output = Path({"all": "results/bench2drive_all", "longest6": "results/longest6_v2"}.get(
+            args.suite, "results/bench2drive_selected"))
     args.output = args.output if args.output.is_absolute() else root / args.output
 
-    routes = discover_all_routes(root) if args.suite == "all" else ROUTES
+    routes = ROUTES if args.suite == "selected" else discover_all_routes(root, args.suite)
     if args.only:
         routes = tuple(route for route in routes if route.route_id in set(args.only))
 
