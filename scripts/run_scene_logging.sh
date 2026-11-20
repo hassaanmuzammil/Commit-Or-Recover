@@ -4,14 +4,14 @@
 # Completed routes are skipped, so the script can be re-launched after a crash.
 set -u
 
-BASE_PATH="/home/018768243@SJSUAD/Desktop/Commit-Or-Recover"
+BASE_PATH="~/Desktop/Commit-Or-Recover"
 export SDL_AUDIODRIVER=dummy
 export CARLA_ROOT="${BASE_PATH}/carla_garage/carla"
 export WORK_DIR="${BASE_PATH}/carla_garage"
 export SCENARIO_RUNNER_ROOT="${WORK_DIR}/scenario_runner"
 export LEADERBOARD_ROOT="${WORK_DIR}/leaderboard"
 export PYTHONPATH="${CARLA_ROOT}/PythonAPI/carla:${SCENARIO_RUNNER_ROOT}:${LEADERBOARD_ROOT}:${WORK_DIR}:${PYTHONPATH:-}"
-PYTHON="/home/018768243@SJSUAD/anaconda3/envs/garage_2/bin/python"
+PYTHON="~/anaconda3/envs/garage_2/bin/python"
 cd "$WORK_DIR"
 
 PHASE="${1:-focus}"   # focus | all | longest6
