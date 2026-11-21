@@ -254,6 +254,22 @@ class SensorAgent(autonomous_agent.AutonomousAgent):
     self.gt_collision_sensor = None
     self.gt_pending_collisions = []
 
+    # Oracle speed-cap experiment (off unless ORACLE_CAP_SPEED is set). Between ORACLE_CAP_START_STEP and
+    # ORACLE_CAP_END_STEP the ego is braked whenever it is faster than ORACLE_CAP_SPEED (m/s); TF++'s steering
+    # and its throttle below the cap are unchanged. The window is given from outside (ground-truth collision time).
+    self.oracle_cap_speed = float(os.environ.get('ORACLE_CAP_SPEED', -1))
+    self.oracle_cap_start = int(os.environ.get('ORACLE_CAP_START_STEP', -1))
+    self.oracle_cap_end = int(os.environ.get('ORACLE_CAP_END_STEP', 10**9))
+    # Optional video frames (chase + bird's-eye camera) for visual inspection; off unless VIDEO_DIR is set.
+    self.video_dir = os.environ.get('VIDEO_DIR')
+    self.video_cameras = []
+    # Optional early stop (off unless ORACLE_STOP_AFTER_COLLISION_STEPS is set): end the route that many steps after
+    # the first ground-truth collision. With ORACLE_STOP_MIN_STEP, never stop before that step, and stop there if no
+    # collision has happened yet.
+    self.stop_after_collision = int(os.environ.get('ORACLE_STOP_AFTER_COLLISION_STEPS', -1))
+    self.stop_min_step = int(os.environ.get('ORACLE_STOP_MIN_STEP', -1))
+    self.first_collision_step = None
+
   def _log_temporal_step(self, timestamp, tick_data, predicted_path,
                          target_speed_probabilities, target_speed_scalar, control,
                          pred_boxes=None, tfpp_flags=None):
@@ -298,6 +314,8 @@ class SensorAgent(autonomous_agent.AutonomousAgent):
     gt_ego, gt_actors = self._collect_ground_truth()
     collisions = self.gt_pending_collisions
     self.gt_pending_collisions = []
+    if collisions and self.first_collision_step is None:
+      self.first_collision_step = int(self.step)
 
     record = {
         'schema_version': 2,
@@ -402,6 +420,28 @@ class SensorAgent(autonomous_agent.AutonomousAgent):
       })
 
     self.gt_collision_sensor.listen(on_collision)
+
+    if self.video_dir:
+      library = self.gt_world.get_blueprint_library()
+      views = {
+          'chase': carla.Transform(carla.Location(x=-9.0, z=5.0), carla.Rotation(pitch=-18.0)),
+          'bev': carla.Transform(carla.Location(x=8.0, z=40.0), carla.Rotation(pitch=-90.0)),
+      }
+      for name, transform in views.items():
+        out_dir = pathlib.Path(self.video_dir) / name
+        out_dir.mkdir(parents=True, exist_ok=True)
+        camera_bp = library.find('sensor.camera.rgb')
+        camera_bp.set_attribute('image_size_x', '960')
+        camera_bp.set_attribute('image_size_y', '540')
+        camera_bp.set_attribute('fov', '90')
+        camera = self.gt_world.spawn_actor(camera_bp, transform, attach_to=self.gt_hero)
+
+        def on_image(image, out_dir=out_dir):
+          frame = np.frombuffer(image.raw_data, dtype=np.uint8).reshape(image.height, image.width, 4)[:, :, :3]
+          cv2.imwrite(str(out_dir / f'{image.frame:08d}.jpg'), frame, [cv2.IMWRITE_JPEG_QUALITY, 88])
+
+        camera.listen(on_image)
+        self.video_cameras.append(camera)
 
   @staticmethod
   def _actor_class(type_id):
@@ -601,6 +641,11 @@ class SensorAgent(autonomous_agent.AutonomousAgent):
   @torch.inference_mode()  # Turns off gradient computation
   def run_step(self, input_data, timestamp, sensors=None):  # pylint: disable=locally-disabled, unused-argument
     self.step += 1
+
+    if self.stop_after_collision >= 0 and self.step >= self.stop_min_step:
+      hit = self.first_collision_step
+      if (hit is not None and self.step >= hit + self.stop_after_collision) or (hit is None and self.stop_min_step >= 0):
+        raise RuntimeError(f'ORACLE_STOP: ending route early at step {self.step} (first collision step {hit})')
 
     if not self.initialized:
       self._init()
@@ -876,6 +921,12 @@ class SensorAgent(autonomous_agent.AutonomousAgent):
       throttle = 0.0
       brake = True
 
+    tfpp_throttle, tfpp_brake = float(throttle), float(brake)
+    oracle_cap_active = (self.oracle_cap_speed >= 0 and self.oracle_cap_start <= self.step <= self.oracle_cap_end)
+    if oracle_cap_active and speed > self.oracle_cap_speed:
+      throttle = 0.0
+      brake = True
+
     control = carla.VehicleControl(steer=float(steer), throttle=float(throttle), brake=float(brake))
 
     if self.IS_BENCH2DRIVE:
@@ -911,6 +962,8 @@ class SensorAgent(autonomous_agent.AutonomousAgent):
             # Built-in TF++ box check (unused by the driving stack); logged for baseline comparison only.
             'tfpp_bb_in_front': bool(self.bb_detected_in_front_of_vehicle(gt_velocity, boxes=logged_boxes))
                                 if logged_boxes is not None else False,
+            **({'oracle_cap_active': bool(oracle_cap_active), 'oracle_cap_speed': self.oracle_cap_speed,
+                'tfpp_throttle': tfpp_throttle, 'tfpp_brake': tfpp_brake} if self.oracle_cap_speed >= 0 else {}),
         })
 
     return control
@@ -1045,6 +1098,15 @@ class SensorAgent(autonomous_agent.AutonomousAgent):
       except RuntimeError:
         pass
       self.gt_collision_sensor = None
+
+    for camera in getattr(self, 'video_cameras', []):
+      try:
+        if camera.is_alive:
+          camera.stop()
+          camera.destroy()
+      except RuntimeError:
+        pass
+    self.video_cameras = []
 
     if hasattr(self, 'temporal_file') and not self.temporal_file.closed:
       self.temporal_file.flush()
