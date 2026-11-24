@@ -17,7 +17,7 @@
 TF++ stays **frozen** throughout. The question is whether its outputs, watched over time, warn that a collision is coming.
 
 
-**Data.** All 220 Bench2Drive routes, run once in CARLA 0.9.15. 61 of 219 routes failed. **60 collisions** have a clean 3 s history and are used for prediction. The work focuses on three scenario families: junction turns, merges and obstacle detours.
+**Data.** All 220 Bench2Drive routes, run once in CARLA 0.9.15. 61 of 219 routes failed. **60 collisions** have a clean 3 s history and are used for prediction. The work focuses on three scenario families: junction turns, merges and obstacle detours. Finding 7 also uses a larger rerun: all 220 routes × 3 traffic seeds (659 route runs, **197 failures**) with the same logging.
 
 **Logging ("schema v2").** A custom logger records every step; the full field list with a sample record is in [tfpp_sample_output_v2.md](tfpp_sample_output_v2.md).
 - **TF++ outputs:** planned path, full target-speed distribution, predicted boxes, and controls (steering, throttle, brake, plus which override was active);
@@ -121,6 +121,40 @@ The best model is **gradient boosting** on intent-aware geometry, TF++ confidenc
 - TF++'s planned path reaches only about 1 s ahead at typical speeds, which limits how early its plan can show a conflict.
 - 60 collisions give confidence intervals of about ±12 points.
 
+### Finding 7: About half of the "false alarms" are near-misses
+
+The label "collision within 3 s" counts every alarm without a crash as false. That includes alarms during real hazards that resolved by luck: the other car braked, or TF++ corrected just in time. Each alarm in normal driving was therefore checked against the ground truth. An alarm is **justified (a near-miss)** if, while it is on or within 1 s of it starting, TF++'s planned path rolled forward against the *real* actors gives a time to collision under 1.5 s. This is the ground-truth version of intent-aware geometry; it is used only for evaluation, never as a monitor input.
+
+*Data: 3 seeds × 220 routes (659 route runs, 197 failures). Gradient boosting, route-grouped cross-validation, alarm score smoothed over 0.5 s. Monitors are compared at the same number of false-alarm onsets per minute of normal driving.*
+
+**High-speed "false" alarms look like the moments before crashes, not like normal driving.** At ego speed above 10 m/s, the share of moments where TF++'s plan was on a real collision course within 1.5 s:
+
+| Moment | Collision course within 1.5 s | Real clearance under 1 m |
+|---|---|---|
+| Normal driving, no alarm | 6% [5, 8] | 43% |
+| **"False" alarms** | **30%** [18, 41] | **71%** |
+| Last 3 s before a crash | 46% [39, 53] | 81% |
+
+![High-speed false alarms vs normal driving vs pre-crash moments](figures/f7a_false_alarms_vs_crashes.png)
+
+**Counting near-misses as justified alarms**, at 2 false alarms per minute:
+
+| Monitor | Warned ≥1 s, crash-only counting | Warned ≥1 s, near-miss counting | Alarms that were near-misses |
+|---|---|---|---|
+| Speed only | 19% | 25% | 31% |
+| TF++ outputs (confidence, path, controls, 1 s history, map) | 33% | 43% | 40% |
+| **+ intent-aware geometry (TF++ boxes)** | **43%** | **58%** | **51%** |
+| Ground-truth scene (reference only) | 45% | 69% | 56% |
+
+![Failures warned ≥1 s ahead under crash-only and near-miss counting](figures/f7b_near_miss_counting.png)
+
+- **About half of the best monitor's "false alarms" were real hazards.** Crash-only labels underestimate the monitor and overstate the false-alarm problem.
+- **This is why direct false-alarm fixes stall.** Manoeuvre-aware thresholds, hard "box near the plan" gates and speed-normalised features gave no significant gain (Section 3): many of the alarms they try to remove are correct.
+- **The value of intent-aware geometry grows under this counting.** Paired route-bootstrap, with vs without TF++ boxes at 2 false alarms per minute: **+15 points [+7, +24] warned ≥1 s** and **+11 points [+3, +19] warned ≥2 s**. Under crash-only counting: +10 [+1, +19] and +0 [−7, +6].
+- **Robust to the cutoff.** With the box monitor at 2 false alarms per minute, warned ≥1 s is 47% with a 1.0 s near-miss cutoff and 68% with 2.0 s. Boxes win at every cutoff.
+
+**Caveats.** The near-miss definition is the ground-truth version of intent-aware geometry, so monitors that use geometry are partly rewarded for agreeing with it, and the ground-truth reference row is fully circular. Crash-only and near-miss numbers should always be reported side by side. "Near-miss" means "on a collision course with the actors' current motion" (constant velocity), not "a crash was certain". Thresholds in this analysis were set on all data rather than on validation routes, which affects compared monitors equally but makes absolute rates slightly optimistic.
+
 ### Side check: would a timely slow-down avoid the crash?
 
 On 6 crash routes, speed was capped at 5 m/s around the known impact time. This oracle check shows what an ideal warning could buy. The crash was avoided in **2**; in **4** it was only postponed and the car hit another vehicle later.
@@ -140,20 +174,25 @@ On 6 crash routes, speed was capped at 5 m/s around the known impact time. This 
 - History longer than 1 s does not help.
 - TF++'s box speed field is always 0, so actors must be tracked frame to frame.
 - Pedestrian detection is poor (38% recall), so pedestrian crashes are outside what an output-level monitor can catch.
+- Separate alarm thresholds per context (junction or not × 4 speed bands) catch slightly more crashes per second of alarm time, but split alarms into more pieces; at the same false alarms per minute they lose to one global threshold.
+- Hard scene gates ("alarm only if a TF++ box is near the plan") and speed-normalised features (time headway, time to reach the nearest box along a plan extended to 50 m) add nothing once intent-aware geometry is a model input.
+- What does help against brief false alarms: smoothing the alarm score over 0.5 s cuts false-alarm onsets about 3× at the same alarm time, raising warned ≥1 s from about 30% to 43% at about 3 false alarms per minute.
 
 ---
 
 ## 4. Next steps
 
-**The main open problem is false alarms.** At the 2% budget the best model raises about **3 false alarms per minute**, mostly short (about 0.5 s) and mostly during legitimate turns, lane changes and bypasses. That is too many for a usable warning system. The plan is to bring the false-alarm rate down by an order of magnitude, to roughly one per 5–10 minutes, while keeping as much ≥1 s recall as possible.
+**The main open problem is false alarms, but about half of them are near-misses** (Finding 7). At the 2% budget the best model raises about **3 false alarms per minute**, mostly short (about 0.5 s) and mostly during legitimate turns, lane changes and bypasses. The target should be *unjustified* alarms, reported next to crash-only numbers. The plan is to bring the false-alarm rate down by an order of magnitude, to roughly one per 5–10 minutes, while keeping as much ≥1 s recall as possible.
 
 1. **More failures and more normal driving.**
    - Analyse the 36 Longest6 routes already logged.
    - Rerun the three core families with more seeds and parameterised variants. The target is 150–200 collisions.
    - More data matters most at strict budgets, where the current 60 collisions are too few to set thresholds reliably.
+   - Done in part: 3 seeds × 220 routes (659 route runs, 197 failures) are now logged with schema v2.
 2. **Reduce false alarms directly.**
-   - **Alarm persistence:** require the risk to stay high for several consecutive steps before alarming, since most false alarms are brief spikes.
-   - **Manoeuvre-aware thresholds:** use separate thresholds or features per manoeuvre type (junction turn, lane change, bypass), because that is where most false-alarm time falls.
+   - **Alarm persistence:** done. A 0.5 s smoothing of the alarm score works best; requiring 5–10 consecutive steps does worse at the same false-alarm rate.
+   - **Manoeuvre-aware thresholds:** done, no gain (Section 3).
+   - **Near-miss-aware evaluation:** count alarms during ground-truth hazards as justified (Finding 7), and rerun it with thresholds chosen on validation routes.
    - **Better geometry:** extend TF++'s short (about 11 m) planned path, improve box tracking, and fix flipped headings. Cleaner conflict estimates should mean fewer spurious alarms.
    - **Graded alerts:** a low-level "caution" signal and a stricter "alarm", instead of one threshold.
 3. **Report at strict budgets.** Evaluate at 0.5% and 1% as well as 2%, as false alarms per hour and recall–lead-time curves, so the trade-off is visible.
@@ -163,6 +202,6 @@ On 6 crash routes, speed was capped at 5 m/s around the known impact time. This 
 
 1. **Contribution.** The original hypothesis (temporal instability predicts failure) is not supported. The evidence instead shows that TF++ fails by confident commitment, which is caught by checking its intent against its own perception. Is a negative result on instability plus this reframed positive result a sufficient research contribution? Given existing trajectory-hazard monitors, where should the novelty be argued?
 2. **Operating point.** For a warning-only monitor, how should the trade-off between false-alarm rate and lead time be judged? Is there an accepted target false-alarm rate, or is reporting the full recall–false-alarm–lead-time trade-off the more defensible evaluation?
-3. **What to predict.** The oracle check shows that many crashes are only postponed by an early slow-down. Should the prediction target stay "collision within 3 s", or move towards "avoidable collision" or a point of no return, which ties the prediction more closely to safety value?
+3. **What to predict.** The oracle check shows that many crashes are only postponed by an early slow-down. Should the prediction target stay "collision within 3 s", or move towards "avoidable collision" or a point of no return, which ties the prediction more closely to safety value? Finding 7 suggests a third option: a **hazard label** (ground-truth time to collision on the plan under 1.5 s), which counts near-misses as positives and gives many more training examples than crashes alone. Is that defensible, given that it is partly circular with intent-aware geometry?
 4. **Offline vs closed-loop evidence.** How much safety value can be claimed from offline prediction results alone? Is a limited closed-loop demonstration needed to support the conclusions?
 5. **Generality.** All results come from one frozen TF++ checkpoint on Bench2Drive. How far can the finding that an end-to-end policy "fails by confident commitment" be generalised? Is a second checkpoint or policy needed to make that claim?
